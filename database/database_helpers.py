@@ -1,9 +1,10 @@
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import inspect
 from sqlalchemy.sql import text  # Import for safely handling raw SQL
-from .models import Expense, engine
+from .models import Expense, engine,Budget
 from datetime import datetime
 import pandas as pd
+
 
 # Set up a single session factory
 Session = sessionmaker(bind=engine)
@@ -49,15 +50,21 @@ def is_budget_empty(month_year):
         return count == 0
 
 
+
 def insert_budget(month_year, category, subcategory, budget):
     """
     Inserts a new budget record into the 'budgets' table.
     """
+    
     with engine.connect() as connection:
-        connection.execute("""
-            INSERT INTO budgets (month_year, category, subcategory, budget)
-            VALUES (%s, %s, %s, %s);
-        """, (month_year, category, subcategory, budget))
+        connection.execute(
+            text("""
+                INSERT INTO budgets (month_year, category, subcategory, budget)
+                VALUES (:month_year, :category, :subcategory, :budget)
+            """),
+            [{"month_year": month_year, "category": category, "subcategory": subcategory, "budget": budget}]
+        )
+        connection.commit()  # Ensure transaction commits
 
 
 
@@ -79,29 +86,34 @@ def fetch_budget(month_year):
     return pd.DataFrame(rows, columns=['Category', 'Subcategory', 'Budget'])
 
 
-
 def update_budget(month_year, category, subcategory, budget):
     """
-    Updates the budget amount for the given month-year, category, and subcategory.
-    If the subcategory does not exist, inserts it as a new record.
+    Updates the budget or inserts a new record if it does not exist.
     """
-    with engine.connect() as connection:
-        result = connection.execute("""
-            SELECT * FROM budgets 
-            WHERE month_year = %s AND category = %s AND subcategory = %s;
-        """, (month_year, category, subcategory))
-        exists = result.fetchone()
+    session = Session()
+    try:
+        budget_entry = session.query(Budget).filter_by(
+            month_year=month_year, category=category, subcategory=subcategory
+        ).first()
 
-        if exists:
-            connection.execute("""
-                UPDATE budgets SET budget = %s
-                WHERE month_year = %s AND category = %s AND subcategory = %s;
-            """, (budget, month_year, category, subcategory))
+        if budget_entry:
+            budget_entry.budget = budget
         else:
-            connection.execute("""
-                INSERT INTO budgets (month_year, category, subcategory, budget)
-                VALUES (%s, %s, %s, %s);
-            """, (month_year, category, subcategory, budget))
+            new_budget = Budget(
+                month_year=month_year,
+                category=category,
+                subcategory=subcategory,
+                budget=budget
+            )
+            session.add(new_budget)
+
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        print("Error updating budget:", e)
+    finally:
+        session.close()
+
 
 def delete_budget(month_year, category=None, subcategory=None):
     """
